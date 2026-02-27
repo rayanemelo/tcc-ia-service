@@ -2,6 +2,9 @@ fastapi
 uvicorn
 torch
 torchvision
+transformers
+accelerate
+safetensors
 pillow
 python-multipart
 numpy
