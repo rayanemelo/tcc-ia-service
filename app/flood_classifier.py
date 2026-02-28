@@ -8,19 +8,15 @@ from io import BytesIO
 from urllib.parse import urlparse
 
 import requests
-import torch
 from PIL import Image, UnidentifiedImageError
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
 from app.config import (
-    AI_PROVIDER,
     LMSTUDIO_API_KEY,
     LMSTUDIO_BASE_URL,
     LMSTUDIO_CHAT_PATH,
     LMSTUDIO_MODEL,
     THRESHOLD,
     VLM_MAX_NEW_TOKENS,
-    VLM_MODEL_ID,
     VLM_TEMPERATURE,
 )
 
@@ -28,10 +24,6 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 10
 APPROVE_THRESHOLD = 0.85
 MANUAL_REVIEW_THRESHOLD = 0.60
-
-_model = None
-_processor = None
-_model_load_error = None
 
 SYSTEM_PROMPT = (
     "Voce analisa imagens para identificar alagamentos urbanos. "
@@ -89,31 +81,6 @@ def _download_image_bytes(image_url: str) -> bytes:
     return data
 
 
-def _load_vlm_once():
-    global _model, _processor, _model_load_error
-
-    if _model is not None and _processor is not None:
-        return _model, _processor
-
-    if _model_load_error is not None:
-        raise RuntimeError(_model_load_error)
-
-    try:
-        processor = AutoProcessor.from_pretrained(VLM_MODEL_ID)
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
-            VLM_MODEL_ID,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto",
-        )
-    except Exception as exc:
-        _model_load_error = f"Erro ao carregar VLM '{VLM_MODEL_ID}': {exc}"
-        raise RuntimeError(_model_load_error) from exc
-
-    _model = model.eval()
-    _processor = processor
-    return _model, _processor
-
-
 def _extract_json(text: str) -> dict:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -161,10 +128,12 @@ def _coerce_bool(value) -> bool:
 def _normalize_output(parsed: dict) -> dict:
     flood_detected = _coerce_bool(parsed.get("flood_detected", False))
     confidence_raw = parsed.get("confidence", 0.0)
+
     try:
         confidence = float(confidence_raw)
     except (TypeError, ValueError):
         confidence = 0.0
+
     confidence = max(0.0, min(1.0, confidence))
 
     reason = str(parsed.get("reason", "Sem justificativa retornada pelo modelo"))
@@ -180,38 +149,6 @@ def _normalize_output(parsed: dict) -> dict:
         "decision": decision,
         "reason": reason if reason else decision_reason,
     }
-
-
-def _predict_with_transformers(image: Image.Image) -> dict:
-    model, processor = _load_vlm_once()
-
-    messages = [
-        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": USER_PROMPT},
-            ],
-        },
-    ]
-
-    prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[prompt], images=[image], return_tensors="pt")
-    inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-
-    with torch.no_grad():
-        generated_ids = model.generate(
-            **inputs,
-            max_new_tokens=VLM_MAX_NEW_TOKENS,
-            temperature=VLM_TEMPERATURE,
-            do_sample=VLM_TEMPERATURE > 0,
-        )
-
-    trimmed_ids = generated_ids[:, inputs["input_ids"].shape[1] :]
-    output_text = processor.batch_decode(trimmed_ids, skip_special_tokens=True)[0]
-    parsed = _extract_json(output_text)
-    return _normalize_output(parsed)
 
 
 def _predict_with_lmstudio(raw_bytes: bytes) -> dict:
@@ -260,12 +197,8 @@ async def predict_image_from_url(image_url: str):
     raw_bytes = await asyncio.to_thread(_download_image_bytes, image_url)
 
     try:
-        image = Image.open(BytesIO(raw_bytes)).convert("RGB")
+        Image.open(BytesIO(raw_bytes)).convert("RGB")
     except UnidentifiedImageError as exc:
         raise ValueError("Arquivo retornado nao e uma imagem valida") from exc
 
-    if AI_PROVIDER == "lmstudio":
-        return await asyncio.to_thread(_predict_with_lmstudio, raw_bytes)
-    if AI_PROVIDER == "transformers":
-        return await asyncio.to_thread(_predict_with_transformers, image)
-    raise RuntimeError("AI_PROVIDER invalido. Use 'transformers' ou 'lmstudio'.")
+    return await asyncio.to_thread(_predict_with_lmstudio, raw_bytes)
