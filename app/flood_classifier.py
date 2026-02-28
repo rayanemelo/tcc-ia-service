@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import base64
 import ipaddress
 import json
@@ -24,16 +24,46 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 10
 APPROVE_THRESHOLD = 0.85
 MANUAL_REVIEW_THRESHOLD = 0.60
+MAX_VLM_IMAGE_SIDE = 1024
+VLM_JPEG_QUALITY = 85
 
 SYSTEM_PROMPT = (
-    "Voce analisa imagens para identificar alagamentos urbanos. "
-    "Responda SOMENTE com JSON valido neste formato: "
-    '{"flood_detected": true|false, "confidence": 0.0-1.0, "reason": "texto curto"}'
+    "Você é um especialista em analise forense visual e monitoramento de alagamentos urbanos. "
+    "Sua tarefa é analisar imagens enviadas por usuarios para verificar: "
+    "1) Se a imagem é valida (foto real do local). "
+    "2) Se existe alagamento real e significativo. "
+    "3) Se ha indicios de fraude, manipulacao ou tentativa de engano. "
+
+    "Considere como possiveis fraudes: "
+    "- Imagem exibida em tela de celular, computador ou TV. "
+    "- Foto de outra foto. "
+    "- Evidencias de edicao digital. "
+    "- Elementos artificiais ou gerados por IA. "
+    "- Marca d'agua de banco de imagens. "
+    "- Inconsistencias de iluminacao, sombras ou perspectiva. "
+
+    "Considere como alagamento real: "
+    "- Agua acumulada cobrindo rua, calcada ou parte significativa da via. "
+    "- Nivel de agua atingindo rodas de veiculos ou estruturas urbanas. "
+    "- Reflexos amplos e continuidade da agua no ambiente. "
+    "Nao considere pequenas pocas isoladas como alagamento. "
+
+    "Responda SOMENTE com JSON valido neste formato exato: "
+    '{'
+    '"image_valid": true|false, '
+    '"flood_detected": true|false, '
+    '"fraud_suspected": true|false, '
+    '"confidence": 0.0-1.0, '
+    '"reason": "texto curto e objetivo"'
+    '}'
 )
 
 USER_PROMPT = (
-    "Analise esta imagem e indique se ha alagamento real no local. "
-    "Nao use markdown, nao use texto extra, responda apenas JSON."
+    "Analise cuidadosamente a imagem enviada. "
+    "Verifique se a imagem é autentica, se ha alagamento real e se existem indicios de fraude. "
+    "Nao use markdown. "
+    "Nao inclua explicações adicionais. "
+    "Responda apenas JSON valido conforme o formato definido."
 )
 
 
@@ -81,6 +111,20 @@ def _download_image_bytes(image_url: str) -> bytes:
     return data
 
 
+def _prepare_image_for_vlm(raw_bytes: bytes) -> bytes:
+    try:
+        image = Image.open(BytesIO(raw_bytes)).convert("RGB")
+    except UnidentifiedImageError as exc:
+        raise ValueError("Arquivo retornado nao e uma imagem valida") from exc
+
+    # Reduce very large images to lower vision decode memory usage in LM Studio.
+    image.thumbnail((MAX_VLM_IMAGE_SIDE, MAX_VLM_IMAGE_SIDE), Image.Resampling.LANCZOS)
+
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=VLM_JPEG_QUALITY, optimize=True)
+    return output.getvalue()
+
+
 def _extract_json(text: str) -> dict:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -95,7 +139,7 @@ def _extract_json(text: str) -> dict:
 
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not match:
-        raise ValueError("Resposta do modelo nao contem JSON valido")
+        raise ValueError("Resposta do modelo não contem JSON válido")
 
     try:
         parsed = json.loads(match.group(0))
@@ -103,16 +147,16 @@ def _extract_json(text: str) -> dict:
         raise ValueError("Resposta JSON do modelo invalida") from exc
 
     if not isinstance(parsed, dict):
-        raise ValueError("JSON retornado pelo modelo nao e um objeto")
+        raise ValueError("JSON retornado pelo modelo não é um objeto")
     return parsed
 
 
 def _decision_from_confidence(confidence: float) -> tuple[str, str]:
     if confidence >= APPROVE_THRESHOLD:
-        return "approve", "Alta confianca para alagamento"
+        return "approve", "Alta confiança para alagamento"
     if confidence >= MANUAL_REVIEW_THRESHOLD:
-        return "manual_review", "Confianca intermediaria, requer validacao humana"
-    return "reject", "Baixa confianca para alagamento"
+        return "manual_review", "Confiança intermediária, requer validação humana"
+    return "reject", "Baixa confiança para alagamento"
 
 
 def _coerce_bool(value) -> bool:
@@ -195,10 +239,6 @@ def _predict_with_lmstudio(raw_bytes: bytes) -> dict:
 
 async def predict_image_from_url(image_url: str):
     raw_bytes = await asyncio.to_thread(_download_image_bytes, image_url)
+    prepared_bytes = await asyncio.to_thread(_prepare_image_for_vlm, raw_bytes)
+    return await asyncio.to_thread(_predict_with_lmstudio, prepared_bytes)
 
-    try:
-        Image.open(BytesIO(raw_bytes)).convert("RGB")
-    except UnidentifiedImageError as exc:
-        raise ValueError("Arquivo retornado nao e uma imagem valida") from exc
-
-    return await asyncio.to_thread(_predict_with_lmstudio, raw_bytes)
