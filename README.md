@@ -19,3 +19,22 @@ $env:LMSTUDIO_API_KEY="lm-studio"
 ```powershell
 uvicorn app.main:app --reload
 ```
+
+## Endpoint `/analyze`
+
+Payload (JSON):
+
+```json
+{
+  "imageUrl": "https://exemplo.com/foto.jpg",
+  "userLocation": { "latitude": -29.649, "longitude": -50.575 },
+  "mapLocation": { "latitude": -29.650, "longitude": -50.574 }
+}
+```
+
+Campos novos na resposta:
+
+- `exif_analysis`: metadados EXIF relevantes e deteccao de foto antiga.
+- `geo_consistency`: distancias entre usuario, ponto no mapa e GPS da foto (EXIF).
+- `veracity_score`: score final de veracidade (0 a 1).
+- `veracity_signals`: detalhamento por componente (`visual_score`, `temporal_score`, `geo_score`).
