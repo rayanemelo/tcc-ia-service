@@ -1,4 +1,4 @@
-"""Fachada publica do classificador de alagamento."""
+"""Expõe a interface pública do pacote modular do classificador de alagamento."""
 
 from app.flood_classifier_components.service import predict_image_from_url
 

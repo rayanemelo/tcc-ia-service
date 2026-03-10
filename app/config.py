@@ -1,3 +1,5 @@
+"""Centraliza leitura de variáveis de ambiente e parâmetros globais da aplicação."""
+
 import os
 from dotenv import load_dotenv
 

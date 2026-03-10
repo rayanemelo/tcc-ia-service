@@ -1,3 +1,5 @@
+"""Define endpoints da API para health check e análise de imagens."""
+
 from fastapi import APIRouter, HTTPException
 
 from app.flood_classifier import predict_image_from_url

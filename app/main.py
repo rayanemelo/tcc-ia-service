@@ -1,3 +1,5 @@
+"""Ponto de entrada da API FastAPI e registro das rotas HTTP."""
+
 from fastapi import FastAPI
 from app.routes import router
 
